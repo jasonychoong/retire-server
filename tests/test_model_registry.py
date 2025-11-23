@@ -7,6 +7,7 @@ import types
 
 import pytest
 
+from server.agents.chat import model_registry
 from server.agents.chat.model_registry import (
     MissingAPIKeyError,
     ModelClient,
@@ -31,18 +32,19 @@ def test_get_model_config_unknown() -> None:
 def test_create_model_client_openai_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
-    class DummyOpenAI:
-        def __init__(self, api_key: str) -> None:
-            self.api_key = api_key
+    class DummyModel:
+        def __init__(self, *, client_args: dict[str, str], model_id: str) -> None:
+            self.client_args = client_args
+            self.model_id = model_id
 
-    fake_module = types.SimpleNamespace(OpenAI=DummyOpenAI)
-    monkeypatch.setitem(sys.modules, "openai", fake_module)
+    monkeypatch.setattr(model_registry, "_import_openai_model", lambda: DummyModel)
 
     client = create_model_client("gpt-5.1-mini")
 
     assert isinstance(client, ModelClient)
     assert client.provider is ModelProvider.OPENAI
-    assert getattr(client.client, "api_key") == "test-key"
+    assert client.client.client_args == {"api_key": "test-key"}
+    assert client.client.model_id == "gpt-5.1-mini"
 
 
 def test_create_model_client_gemini_stub(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,11 +67,18 @@ def test_create_model_client_gemini_stub(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setitem(sys.modules, "google", google_pkg)
     monkeypatch.setitem(sys.modules, "google.genai", genai_pkg)
 
-    client = create_model_client("gemini-2.5")
+    class DummyGeminiModel:
+        def __init__(self, *, client_args: dict[str, str], model_id: str) -> None:
+            self.client_args = client_args
+            self.model_id = model_id
+
+    monkeypatch.setattr(model_registry, "_import_gemini_model", lambda: DummyGeminiModel)
+
+    client = create_model_client("gemini-2.5-flash")
 
     assert client.provider is ModelProvider.GEMINI
-    assert client.client.model_name == "gemini-2.5"
-    assert getattr(genai_pkg, "configured_key") == "gem-key"
+    assert client.client.model_id == "gemini-2.5-flash"
+    assert client.client.client_args == {"api_key": "gem-key"}
 
 
 def test_create_model_client_missing_api_key(monkeypatch: pytest.MonkeyPatch) -> None:

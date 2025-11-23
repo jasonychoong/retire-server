@@ -15,7 +15,6 @@ from .model_registry import (
 )
 from .runtime import (
     AgentBuildError,
-    ChatAgent,
     SlidingWindowConversationManager,
     build_agent,
     build_conversation_manager,
@@ -24,7 +23,6 @@ from .runtime import (
 __all__ = [
     "MODEL_REGISTRY",
     "AgentBuildError",
-    "ChatAgent",
     "ModelClient",
     "ModelConfig",
     "ModelProvider",
