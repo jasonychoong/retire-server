@@ -52,17 +52,17 @@ def test_resolve_config_applies_overrides(tmp_path: Path) -> None:
     args = make_args(
         new_session=True,
         config_file=str(config_path),
-        model="gemini-2.5-flash",
+        model="gemini-2.5-pro",
         window_size=64,
         should_truncate_results="false",
     )
 
     config, metadata = chat.resolve_config(store, record.id, args)
 
-    assert config.model == "gemini-2.5-flash"
+    assert config.model == "gemini-2.5-pro"
     assert config.window_size == 64
     assert config.should_truncate_results is False
-    assert metadata["config"]["model"] == "gemini-2.5-flash"
+    assert metadata["config"]["model"] == "gemini-2.5-pro"
 
 
 def test_resolve_system_prompt_inline_updates_metadata_and_history(tmp_path: Path) -> None:

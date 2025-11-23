@@ -64,6 +64,12 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         model_id="gpt-5.1",
         description="Full GPT-5.1 model for higher-quality outputs.",
     ),
+    "gemini-2.5-pro": ModelConfig(
+        code="gemini-2.5-pro",
+        provider=ModelProvider.GEMINI,
+        model_id="gemini-2.5-pro",
+        description="Gemini 2.5 Pro model for higher quality responses.",
+    ),
     "gemini-2.5-flash": ModelConfig(
         code="gemini-2.5-flash",
         provider=ModelProvider.GEMINI,

@@ -47,7 +47,8 @@ def test_create_model_client_openai_stub(monkeypatch: pytest.MonkeyPatch) -> Non
     assert client.client.model_id == "gpt-5.1-mini"
 
 
-def test_create_model_client_gemini_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("model_code", ["gemini-2.5-flash", "gemini-2.5-pro"])
+def test_create_model_client_gemini_stub(monkeypatch: pytest.MonkeyPatch, model_code: str) -> None:
     monkeypatch.setenv("GOOGLE_AI_API_KEY", "gem-key")
 
     google_pkg = types.ModuleType("google")
@@ -74,10 +75,10 @@ def test_create_model_client_gemini_stub(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(model_registry, "_import_gemini_model", lambda: DummyGeminiModel)
 
-    client = create_model_client("gemini-2.5-flash")
+    client = create_model_client(model_code)
 
     assert client.provider is ModelProvider.GEMINI
-    assert client.client.model_id == "gemini-2.5-flash"
+    assert client.client.model_id == model_code
     assert client.client.client_args == {"api_key": "gem-key"}
 
 
