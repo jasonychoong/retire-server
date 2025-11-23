@@ -7,17 +7,27 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from server.agents.chat import MODEL_REGISTRY
+from server.agents.chat import (
+    MODEL_REGISTRY,
+    ModelRegistryError,
+    build_agent,
+    create_model_client,
+)
+from strands.types.content import Messages
 from server.tools.lib import (
     ConfigError,
     SessionConfig,
     SessionNotFoundError,
     SessionStore,
+    SessionStoreError,
     load_base_config,
     session_config_from_metadata,
 )
+
+HISTORY_DISPLAY_LIMIT = 10
+EXIT_COMMANDS = {"exit", "/exit", "quit", ":q"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +56,16 @@ def parse_args() -> argparse.Namespace:
         "--system-prompt-file",
         type=str,
         help="Path to a file containing the system prompt text.",
+    )
+    parser.add_argument(
+        "--single",
+        action="store_true",
+        help="Run a single-turn interaction (default is interactive mode).",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print verbose diagnostics to stdout in addition to standard output.",
     )
     return parser.parse_args()
 
@@ -181,6 +201,241 @@ def _append_system_prompt_history(store: SessionStore, session_id: str, prompt_t
     store.write_history(session_id, history)
 
 
+def load_tools() -> List[Any]:
+    """Placeholder for Task 4 tool loading."""
+
+    return []
+
+
+def history_to_agent_messages(history: List[Dict[str, Any]]) -> Messages:
+    """Convert stored history entries into Strands Agent message objects."""
+
+    agent_messages: Messages = []
+    for entry in history:
+        role = entry.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        content = entry.get("content")
+        if not isinstance(content, str):
+            continue
+        agent_messages.append({"role": role, "content": [{"text": content}]})
+    return agent_messages
+
+
+def extract_text_from_message(message: Dict[str, Any]) -> str:
+    """Concatenate text blocks from a Strands message."""
+
+    chunks: List[str] = []
+    for block in message.get("content", []):
+        if isinstance(block, dict) and "text" in block:
+            text = block.get("text")
+            if isinstance(text, str):
+                chunks.append(text)
+    return "\n".join(chunks).strip()
+
+
+def verbose_print(enabled: bool, message: str) -> None:
+    """Print a verbose message when enabled."""
+
+    if enabled:
+        print(f"[verbose] {message}")
+
+
+def print_history_overview(history: List[Dict[str, Any]]) -> None:
+    """Display a short summary of the existing conversation."""
+
+    if not history:
+        print("No previous conversation history.")
+        return
+
+    print("Previous conversation:")
+    for entry in history[-HISTORY_DISPLAY_LIMIT:]:
+        role = entry.get("role", "system")
+        label = {
+            "user": "You",
+            "assistant": "Assistant",
+            "system": "System",
+        }.get(role, role.title())
+        content = entry.get("content", "")
+        print(f"{label}: {content}")
+
+
+def collect_single_input(prompt: str = "You> ") -> Optional[str]:
+    """Collect a single line of input from stdin or the terminal."""
+
+    if not sys.stdin.isatty():
+        data = sys.stdin.read().strip()
+        return data or None
+    try:
+        value = input(prompt)
+    except EOFError:
+        return None
+    return value.strip() or None
+
+
+def run_single_turn(
+    *,
+    agent: Any,
+    store: SessionStore,
+    session_id: str,
+    history: List[Dict[str, Any]],
+    metadata: Dict[str, Any],
+    verbose: bool,
+) -> int:
+    """Execute a single user→assistant turn."""
+
+    user_input = collect_single_input()
+    if not user_input:
+        print("No input provided; exiting.", file=sys.stderr)
+        return 1
+
+    response = execute_turn(
+        agent=agent,
+        store=store,
+        session_id=session_id,
+        history=history,
+        metadata=metadata,
+        user_input=user_input,
+        verbose=verbose,
+    )
+    if response is None:
+        return 1
+    print(f"Assistant: {response}")
+    return 0
+
+
+def run_interactive_loop(
+    *,
+    agent: Any,
+    store: SessionStore,
+    session_id: str,
+    history: List[Dict[str, Any]],
+    metadata: Dict[str, Any],
+    verbose: bool,
+) -> int:
+    """Enter interactive chat mode until the user exits."""
+
+    print_history_overview(history)
+    print("Enter '/exit' or press Ctrl-D to leave the session.")
+    while True:
+        try:
+            user_input = input("You> ").strip()
+        except EOFError:
+            print()
+            break
+        except KeyboardInterrupt:
+            print("\nInterrupted.")
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in EXIT_COMMANDS:
+            break
+
+        response = execute_turn(
+            agent=agent,
+            store=store,
+            session_id=session_id,
+            history=history,
+            metadata=metadata,
+            user_input=user_input,
+            verbose=verbose,
+        )
+        if response is not None:
+            print(f"Assistant: {response}")
+
+    return 0
+
+
+def execute_turn(
+    *,
+    agent: Any,
+    store: SessionStore,
+    session_id: str,
+    history: List[Dict[str, Any]],
+    metadata: Dict[str, Any],
+    user_input: str,
+    verbose: bool,
+) -> Optional[str]:
+    """Run a single agent invocation and persist history/metadata."""
+
+    user_entry = append_history_entry(store, session_id, history, "user", user_input)
+
+    try:
+        result = agent(user_input)
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"Agent execution failed: {exc}", file=sys.stderr)
+        metadata.setdefault("errors", []).append(
+            {"timestamp": user_entry["timestamp"], "message": str(exc)}
+        )
+        store.write_metadata(session_id, metadata)
+        return None
+
+    response_text = extract_text_from_message(result.message) or "[No response]"
+    assistant_entry = append_history_entry(store, session_id, history, "assistant", response_text)
+    record_turn_metadata(metadata, result, user_entry, assistant_entry)
+    store.write_metadata(session_id, metadata)
+
+    usage = getattr(result.metrics, "accumulated_usage", None)
+    if usage:
+        verbose_print(
+            verbose,
+            f"tokens in={usage.inputTokens} out={usage.outputTokens} total={usage.totalTokens}",
+        )
+    verbose_print(verbose, f"stop reason: {result.stop_reason}")
+    return response_text
+
+
+def record_turn_metadata(
+    metadata: Dict[str, Any],
+    result: Any,
+    user_entry: Dict[str, Any],
+    assistant_entry: Dict[str, Any],
+) -> None:
+    """Persist per-turn metadata for later inspection."""
+
+    turn_log = metadata.setdefault("turns", [])
+    usage = getattr(result.metrics, "accumulated_usage", None)
+    usage_payload: Dict[str, Any] | None = None
+    if usage:
+        usage_payload = {
+            "input_tokens": getattr(usage, "inputTokens", None),
+            "output_tokens": getattr(usage, "outputTokens", None),
+            "total_tokens": getattr(usage, "totalTokens", None),
+        }
+
+    turn_log.append(
+        {
+            "timestamp": assistant_entry.get("timestamp"),
+            "user": user_entry.get("content"),
+            "assistant": assistant_entry.get("content"),
+            "stop_reason": str(getattr(result, "stop_reason", "")),
+            "usage": usage_payload,
+        }
+    )
+    metadata["last_response"] = assistant_entry.get("content")
+    metadata["last_stop_reason"] = str(getattr(result, "stop_reason", ""))
+
+
+def append_history_entry(
+    store: SessionStore,
+    session_id: str,
+    history: List[Dict[str, Any]],
+    role: str,
+    content: str,
+) -> Dict[str, Any]:
+    """Append a message to the in-memory and on-disk history."""
+
+    entry = {
+        "role": role,
+        "content": content,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    history.append(entry)
+    store.write_history(session_id, history)
+    return entry
+
+
 def main() -> int:
     args = parse_args()
     store = SessionStore()
@@ -231,13 +486,58 @@ def main() -> int:
 
     store.write_metadata(session_id, metadata)
 
+    effective_system_prompt = system_prompt if system_prompt is not None else metadata.get("system_prompt_text")
+
+    try:
+        history = store.read_history(session_id)
+    except SessionStoreError as exc:
+        print(f"Unable to read session history: {exc}", file=sys.stderr)
+        return 1
+
+    agent_messages = history_to_agent_messages(history)
+
+    try:
+        model_client = create_model_client(config.model)
+    except ModelRegistryError as exc:
+        print(f"Model configuration error: {exc}", file=sys.stderr)
+        return 1
+
+    agent = build_agent(
+        session_config=config,
+        model_client=model_client,
+        system_prompt=effective_system_prompt,
+        tools=load_tools(),
+        messages=agent_messages,
+    )
+
     print(f"Active session: {session_id}")
     print(f"Model: {config.model}")
     print(f"Window size: {config.window_size}")
     print(f"Should truncate results: {config.should_truncate_results}")
-    if system_prompt:
+    if effective_system_prompt:
         source = metadata.get("system_prompt_source", "unknown")
-        print(f"System prompt ({source}): {metadata.get('system_prompt_file_path') or 'inline text'}")
-    print("Chat functionality will be added in Task 3 – this command currently handles setup only.")
-    return 0
+        location = metadata.get("system_prompt_file_path") or "inline text"
+        print(f"System prompt ({source}): {location}")
+
+    if args.single:
+        status = run_single_turn(
+            agent=agent,
+            store=store,
+            session_id=session_id,
+            history=history,
+            metadata=metadata,
+            verbose=args.verbose,
+        )
+    else:
+        status = run_interactive_loop(
+            agent=agent,
+            store=store,
+            session_id=session_id,
+            history=history,
+            metadata=metadata,
+            verbose=args.verbose,
+        )
+
+    print(f"Session ID: {session_id}")
+    return status
 

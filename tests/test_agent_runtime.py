@@ -26,6 +26,7 @@ def test_build_conversation_manager_applies_config() -> None:
 def test_build_agent_constructs_strands_agent() -> None:
     config = SessionConfig(model="gpt-5.1", window_size=10, should_truncate_results=True)
     client = ModelClient(provider=ModelProvider.OPENAI, model_id="gpt-5.1", client=object())
+    prior_messages = [{"role": "user", "content": [{"text": "hello"}]}]
 
     sentinel_manager = object()
     with patch("server.agents.chat.runtime.build_conversation_manager", return_value=sentinel_manager) as bcm_mock, patch(
@@ -39,6 +40,7 @@ def test_build_agent_constructs_strands_agent() -> None:
             model_client=client,
             system_prompt="You are helpful.",
             tools=("calc",),
+            messages=prior_messages,
         )
 
     assert agent is agent_instance
@@ -49,6 +51,7 @@ def test_build_agent_constructs_strands_agent() -> None:
         tools=["calc"],
         conversation_manager=sentinel_manager,
         load_tools_from_directory=False,
+        messages=prior_messages,
     )
 
 

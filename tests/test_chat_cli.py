@@ -25,6 +25,8 @@ def make_args(**overrides) -> Namespace:
         description=None,
         delete_session=None,
         list_sessions=False,
+        single=False,
+        verbose=False,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -100,3 +102,30 @@ def test_resolve_system_prompt_conflict(tmp_path: Path) -> None:
     metadata = {}
     with pytest.raises(ValueError):
         chat.resolve_system_prompt(store, record.id, metadata, args)
+
+
+def test_history_to_agent_messages_skips_system_entries() -> None:
+    history = [
+        {"role": "system", "content": "prompt"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there"},
+    ]
+
+    messages = chat.history_to_agent_messages(history)
+
+    assert len(messages) == 2
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"][0]["text"] == "hello"
+    assert messages[1]["role"] == "assistant"
+
+
+def test_extract_text_from_message_concatenates_blocks() -> None:
+    message = {
+        "content": [
+            {"text": "Part one"},
+            {"text": "Part two"},
+            {"toolUse": {}},
+        ]
+    }
+
+    assert chat.extract_text_from_message(message) == "Part one\nPart two"

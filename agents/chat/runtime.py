@@ -6,6 +6,7 @@ from typing import Any, Sequence
 
 from strands.agent import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
+from strands.types.content import Messages
 
 from server.agents.chat.model_registry import ModelClient
 from server.tools.lib import SessionConfig
@@ -30,6 +31,7 @@ def build_agent(
     model_client: ModelClient,
     system_prompt: str | None,
     tools: Sequence[Any] | None = None,
+    messages: Messages | None = None,
 ) -> Agent:
     """Construct a Strands Agent configured with the session parameters."""
 
@@ -42,5 +44,6 @@ def build_agent(
         tools=list(tools or ()),
         conversation_manager=conversation_manager,
         load_tools_from_directory=False,
+        messages=messages,
     )
 
