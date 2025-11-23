@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from server.agents.chat import MODEL_REGISTRY
 from server.tools.lib import (
     ConfigError,
     SessionConfig,
@@ -29,7 +30,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--description", type=str, help="Update the description for --session.")
     parser.add_argument("--delete-session", type=str, metavar="UUID", help="Delete the specified session and exit.")
     parser.add_argument("--config-file", type=str, help="Override the default config.yaml path.")
-    parser.add_argument("--model", type=str, help="Override the model for this invocation.")
+    parser.add_argument(
+        "--model",
+        type=str,
+        help=f"Override the model (supported: {', '.join(sorted(MODEL_REGISTRY))}).",
+    )
     parser.add_argument("--window-size", type=int, help="Override the sliding window size.")
     parser.add_argument(
         "--should-truncate-results",
