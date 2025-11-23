@@ -39,12 +39,12 @@ def test_create_model_client_openai_stub(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(model_registry, "_import_openai_model", lambda: DummyModel)
 
-    client = create_model_client("gpt-5.1-mini")
+    client = create_model_client("gpt-5-mini")
 
     assert isinstance(client, ModelClient)
     assert client.provider is ModelProvider.OPENAI
     assert client.client.client_args == {"api_key": "test-key"}
-    assert client.client.model_id == "gpt-5.1-mini"
+    assert client.client.model_id == "gpt-5-mini"
 
 
 @pytest.mark.parametrize("model_code", ["gemini-2.5-flash", "gemini-2.5-pro"])

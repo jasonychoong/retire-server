@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from server.tools.lib import chat_cli as chat
-from server.tools.lib.session_store import SessionStore
+from server.tools.lib.session_store import SessionNotFoundError, SessionStore
 
 
 def make_args(**overrides) -> Namespace:
@@ -41,6 +41,26 @@ def test_resolve_session_creates_new_when_none(monkeypatch: pytest.MonkeyPatch, 
 
     assert store.session_exists(session_id)
     assert os.environ["RETIRE_CURRENT_SESSION_ID"] == session_id
+
+
+def test_resolve_session_uses_existing_current_when_env_missing(tmp_path: Path) -> None:
+    store = SessionStore(base_dir=tmp_path / ".chat")
+    first = store.create_session()
+    second = store.create_session()
+    store.mark_current(second.id)
+
+    args = make_args()
+    session_id = chat.resolve_session(store, args)
+
+    assert session_id == second.id
+
+
+def test_resolve_session_errors_for_unknown_id(tmp_path: Path) -> None:
+    store = SessionStore(base_dir=tmp_path / ".chat")
+    args = make_args(session="bad-id")
+
+    with pytest.raises(SessionNotFoundError):
+        chat.resolve_session(store, args)
 
 
 def test_resolve_config_applies_overrides(tmp_path: Path) -> None:

@@ -98,6 +98,14 @@ class SessionStore:
             raise SessionNotFoundError(f"Session {session_id} not found")
         self._write_index(sessions)
 
+    def get_current_session(self) -> Optional[SessionRecord]:
+        """Return the session marked as current, if any."""
+
+        for record in self._read_index():
+            if record.is_current:
+                return record
+        return None
+
     def update_description(self, session_id: str, description: str) -> None:
         changed = False
         sessions = self._read_index()

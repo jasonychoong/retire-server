@@ -111,16 +111,27 @@ def parse_bool(value: Optional[str]) -> Optional[bool]:
 
 
 def resolve_session(store: SessionStore, args: argparse.Namespace) -> str:
-    if args.new_session:
+    session_id: Optional[str] = None
+
+    if args.session:
+        session_id = args.session
+        if not store.session_exists(session_id):
+            raise SessionNotFoundError(f"Session {session_id} does not exist")
+    elif args.new_session:
         record = store.create_session()
         session_id = record.id
     else:
-        session_id = args.session or os.environ.get("RETIRE_CURRENT_SESSION_ID")
-        if not session_id:
-            record = store.create_session()
-            session_id = record.id
-        elif not store.session_exists(session_id):
-            raise SessionNotFoundError(f"Session {session_id} does not exist")
+        env_session = os.environ.get("RETIRE_CURRENT_SESSION_ID")
+        if env_session and store.session_exists(env_session):
+            session_id = env_session
+        else:
+            current_record = store.get_current_session()
+            if current_record and store.session_exists(current_record.id):
+                session_id = current_record.id
+            else:
+                record = store.create_session()
+                session_id = record.id
+
     store.mark_current(session_id)
     os.environ["RETIRE_CURRENT_SESSION_ID"] = session_id
     return session_id
