@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""CLI entrypoint for managing local chat sessions."""
+"""CLI helpers for managing local chat sessions."""
 
 from __future__ import annotations
 
@@ -164,8 +163,4 @@ def main() -> int:
     print(f"Should truncate results: {config.should_truncate_results}")
     print("Chat functionality will be added in Task 3 – this command currently handles setup only.")
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
 
