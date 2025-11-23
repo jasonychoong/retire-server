@@ -378,9 +378,10 @@ def execute_turn(
 
     usage = getattr(result.metrics, "accumulated_usage", None)
     if usage:
+        input_tokens, output_tokens, total_tokens = coerce_usage_counts(usage)
         verbose_print(
             verbose,
-            f"tokens in={usage.inputTokens} out={usage.outputTokens} total={usage.totalTokens}",
+            f"tokens in={input_tokens} out={output_tokens} total={total_tokens}",
         )
     verbose_print(verbose, f"stop reason: {result.stop_reason}")
     return response_text
@@ -398,10 +399,11 @@ def record_turn_metadata(
     usage = getattr(result.metrics, "accumulated_usage", None)
     usage_payload: Dict[str, Any] | None = None
     if usage:
+        input_tokens, output_tokens, total_tokens = coerce_usage_counts(usage)
         usage_payload = {
-            "input_tokens": getattr(usage, "inputTokens", None),
-            "output_tokens": getattr(usage, "outputTokens", None),
-            "total_tokens": getattr(usage, "totalTokens", None),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
         }
 
     turn_log.append(
@@ -434,6 +436,22 @@ def append_history_entry(
     history.append(entry)
     store.write_history(session_id, history)
     return entry
+
+
+def coerce_usage_counts(usage: Any) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """Extract token usage whether result is a dataclass or dict."""
+
+    if isinstance(usage, dict):
+        return (
+            usage.get("inputTokens") or usage.get("input_tokens"),
+            usage.get("outputTokens") or usage.get("output_tokens"),
+            usage.get("totalTokens") or usage.get("total_tokens"),
+        )
+    return (
+        getattr(usage, "inputTokens", None),
+        getattr(usage, "outputTokens", None),
+        getattr(usage, "totalTokens", None),
+    )
 
 
 def main() -> int:
