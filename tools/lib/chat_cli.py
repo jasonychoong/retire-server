@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--session", type=str, help="Target an existing session by UUID.")
     parser.add_argument("--description", type=str, help="Update the description for --session.")
     parser.add_argument("--delete-session", type=str, metavar="UUID", help="Delete the specified session and exit.")
+    parser.add_argument("--delete-all-sessions", action="store_true", help="Delete all sessions and exit.")
     parser.add_argument("--config-file", type=str, help="Override the default config.yaml path.")
     parser.add_argument(
         "--model",
@@ -205,6 +206,17 @@ def load_tools() -> List[Any]:
     """Placeholder for Task 4 tool loading."""
 
     return []
+
+
+def delete_all_sessions(store: SessionStore) -> None:
+    """Remove every session from the registry and filesystem."""
+
+    records = store.list_sessions()
+    for record in records:
+        try:
+            store.delete_session(record.id)
+        except SessionNotFoundError:
+            continue
 
 
 def history_to_agent_messages(history: List[Dict[str, Any]]) -> Messages:
@@ -469,6 +481,11 @@ def main() -> int:
             print(str(exc), file=sys.stderr)
             return 1
         print(f"Deleted session {args.delete_session}")
+        return 0
+
+    if args.delete_all_sessions:
+        delete_all_sessions(store)
+        print("Deleted all sessions.")
         return 0
 
     if args.description and not args.session:

@@ -104,6 +104,17 @@ def test_resolve_system_prompt_conflict(tmp_path: Path) -> None:
         chat.resolve_system_prompt(store, record.id, metadata, args)
 
 
+def test_delete_all_sessions(tmp_path: Path) -> None:
+    store = SessionStore(base_dir=tmp_path / ".chat")
+    first = store.create_session()
+    second = store.create_session()
+
+    chat.delete_all_sessions(store)
+
+    remaining = store.list_sessions()
+    assert remaining == []
+
+
 def test_history_to_agent_messages_skips_system_entries() -> None:
     history = [
         {"role": "system", "content": "prompt"},
