@@ -52,11 +52,11 @@ class MissingAPIKeyError(ModelRegistryError):
 
 
 MODEL_REGISTRY: Dict[str, ModelConfig] = {
-    "gpt-5.1-mini": ModelConfig(
-        code="gpt-5.1-mini",
+    "gpt-5-mini": ModelConfig(
+        code="gpt-5-mini",
         provider=ModelProvider.OPENAI,
-        model_id="gpt-5.1-mini",
-        description="Cost-effective GPT-5.1 variant suitable for experimentation.",
+        model_id="gpt-5-mini",
+        description="Cost-effective GPT-5 variant suitable for experimentation.",
     ),
     "gpt-5.1": ModelConfig(
         code="gpt-5.1",
