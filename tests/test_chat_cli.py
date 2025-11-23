@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from server.tools import chat_cli as chat
+from server.tools.lib import chat_cli as chat
 from server.tools.lib.session_store import SessionStore
 
 
