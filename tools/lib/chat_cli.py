@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 from server.tools.lib import (
     ConfigError,
@@ -34,6 +35,12 @@ def parse_args() -> argparse.Namespace:
         "--should-truncate-results",
         type=str,
         help="Override the truncate-results flag (true/false).",
+    )
+    parser.add_argument("--system-prompt", type=str, help="Inline system prompt for this session.")
+    parser.add_argument(
+        "--system-prompt-file",
+        type=str,
+        help="Path to a file containing the system prompt text.",
     )
     return parser.parse_args()
 
@@ -93,8 +100,10 @@ def resolve_session(store: SessionStore, args: argparse.Namespace) -> str:
     return session_id
 
 
-def resolve_config(store: SessionStore, session_id: str, args: argparse.Namespace) -> SessionConfig:
-    metadata = {}
+def resolve_config(
+    store: SessionStore, session_id: str, args: argparse.Namespace
+) -> Tuple[SessionConfig, Dict[str, Any]]:
+    metadata: Dict[str, Any] = {}
     if store.session_exists(session_id):
         metadata = store.read_metadata(session_id)
     base_config = session_config_from_metadata(metadata)
@@ -111,8 +120,60 @@ def resolve_config(store: SessionStore, session_id: str, args: argparse.Namespac
         should_truncate_results=overrides["should_truncate_results"],
     )
     metadata["config"] = effective.to_dict()
-    store.write_metadata(session_id, metadata)
-    return effective
+    return effective, metadata
+
+
+def resolve_system_prompt(
+    store: SessionStore, session_id: str, metadata: Dict[str, Any], args: argparse.Namespace
+) -> Optional[str]:
+    inline_prompt = args.system_prompt
+    file_prompt = args.system_prompt_file
+    if inline_prompt and file_prompt:
+        raise ValueError("Provide only one of --system-prompt or --system-prompt-file.")
+
+    previous_text = metadata.get("system_prompt_text")
+    previous_source = metadata.get("system_prompt_source")
+    previous_file_path = metadata.get("system_prompt_file_path")
+
+    if file_prompt:
+        prompt_path = Path(file_prompt).expanduser()
+        if not prompt_path.exists():
+            raise FileNotFoundError(f"System prompt file not found: {prompt_path}")
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+        source = "file"
+        file_path = str(prompt_path.resolve())
+    elif inline_prompt is not None:
+        prompt_text = inline_prompt
+        source = "inline"
+        file_path = None
+    else:
+        # No changes requested; return previous state.
+        return previous_text
+
+    if prompt_text == previous_text and source == previous_source and file_path == previous_file_path:
+        return prompt_text
+
+    metadata["system_prompt_text"] = prompt_text
+    metadata["system_prompt_source"] = source
+    metadata["system_prompt_file_path"] = file_path
+    metadata["system_prompt_updated_at"] = datetime.now(timezone.utc).isoformat()
+    _append_system_prompt_history(store, session_id, prompt_text)
+    return prompt_text
+
+
+def _append_system_prompt_history(store: SessionStore, session_id: str, prompt_text: str) -> None:
+    history = store.read_history(session_id)
+    last_system = next((item for item in reversed(history) if item.get("role") == "system"), None)
+    if last_system and last_system.get("content") == prompt_text:
+        return
+    history.append(
+        {
+            "role": "system",
+            "content": prompt_text,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    store.write_history(session_id, history)
 
 
 def main() -> int:
@@ -152,15 +213,26 @@ def main() -> int:
         return 1
 
     try:
-        config = resolve_config(store, session_id, args)
+        config, metadata = resolve_config(store, session_id, args)
     except (ConfigError, ValueError) as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
+
+    try:
+        system_prompt = resolve_system_prompt(store, session_id, metadata, args)
+    except (ValueError, OSError) as exc:
+        print(f"System prompt error: {exc}", file=sys.stderr)
+        return 1
+
+    store.write_metadata(session_id, metadata)
 
     print(f"Active session: {session_id}")
     print(f"Model: {config.model}")
     print(f"Window size: {config.window_size}")
     print(f"Should truncate results: {config.should_truncate_results}")
+    if system_prompt:
+        source = metadata.get("system_prompt_source", "unknown")
+        print(f"System prompt ({source}): {metadata.get('system_prompt_file_path') or 'inline text'}")
     print("Chat functionality will be added in Task 3 – this command currently handles setup only.")
     return 0
 

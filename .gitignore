@@ -5,3 +5,7 @@ __pycache__/
 # Virtual environment
 .venv/
 
+# Local chat state
+tools/.chat/sessions/
+tools/.chat/logs/
+

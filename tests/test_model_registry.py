@@ -1,0 +1,78 @@
+"""Tests for the model registry helpers."""
+
+from __future__ import annotations
+
+import sys
+import types
+
+import pytest
+
+from server.agents.chat.model_registry import (
+    MissingAPIKeyError,
+    ModelClient,
+    ModelProvider,
+    UnknownModelError,
+    create_model_client,
+    get_model_config,
+)
+
+
+def test_get_model_config_returns_entry() -> None:
+    config = get_model_config("gpt-5.1")
+    assert config.model_id == "gpt-5.1"
+    assert config.provider is ModelProvider.OPENAI
+
+
+def test_get_model_config_unknown() -> None:
+    with pytest.raises(UnknownModelError):
+        get_model_config("made-up-model")
+
+
+def test_create_model_client_openai_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    class DummyOpenAI:
+        def __init__(self, api_key: str) -> None:
+            self.api_key = api_key
+
+    fake_module = types.SimpleNamespace(OpenAI=DummyOpenAI)
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+
+    client = create_model_client("gpt-5.1-mini")
+
+    assert isinstance(client, ModelClient)
+    assert client.provider is ModelProvider.OPENAI
+    assert getattr(client.client, "api_key") == "test-key"
+
+
+def test_create_model_client_gemini_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GOOGLE_AI_API_KEY", "gem-key")
+
+    google_pkg = types.ModuleType("google")
+    genai_pkg = types.ModuleType("google.genai")
+
+    class DummyGenerativeModel:
+        def __init__(self, model_name: str) -> None:
+            self.model_name = model_name
+
+    def configure(*, api_key: str) -> None:
+        genai_pkg.configured_key = api_key
+
+    genai_pkg.GenerativeModel = DummyGenerativeModel
+    genai_pkg.configure = configure
+    google_pkg.genai = genai_pkg
+
+    monkeypatch.setitem(sys.modules, "google", google_pkg)
+    monkeypatch.setitem(sys.modules, "google.genai", genai_pkg)
+
+    client = create_model_client("gemini-2.5")
+
+    assert client.provider is ModelProvider.GEMINI
+    assert client.client.model_name == "gemini-2.5"
+    assert getattr(genai_pkg, "configured_key") == "gem-key"
+
+
+def test_create_model_client_missing_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(MissingAPIKeyError):
+        create_model_client("gpt-5.1")
