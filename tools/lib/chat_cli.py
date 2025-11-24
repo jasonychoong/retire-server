@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,6 +30,7 @@ from server.tools.lib import (
 )
 
 HISTORY_DISPLAY_LIMIT = 10
+TOOL_SUMMARY_LIMIT = 200
 EXIT_COMMANDS = {"exit", "/exit", "quit", ":q"}
 
 
@@ -389,6 +391,8 @@ def execute_turn(
     """Run a single agent invocation and persist history/metadata."""
 
     user_entry = append_history_entry(store, session_id, history, "user", user_input)
+    agent_messages = getattr(agent, "messages", [])
+    prev_agent_message_count = len(agent_messages) if isinstance(agent_messages, list) else 0
 
     try:
         result = agent(user_input)
@@ -400,9 +404,19 @@ def execute_turn(
         store.write_metadata(session_id, metadata)
         return None
 
+    tool_events = extract_tool_events(agent, prev_agent_message_count)
+    for event in tool_events:
+        append_history_entry(
+            store,
+            session_id,
+            history,
+            "tool",
+            format_tool_history_entry(event),
+        )
+
     response_text = extract_text_from_message(result.message) or "[No response]"
     assistant_entry = append_history_entry(store, session_id, history, "assistant", response_text)
-    record_turn_metadata(metadata, result, user_entry, assistant_entry)
+    record_turn_metadata(metadata, result, user_entry, assistant_entry, tool_events)
     store.write_metadata(session_id, metadata)
 
     usage = getattr(result.metrics, "accumulated_usage", None)
@@ -421,6 +435,7 @@ def record_turn_metadata(
     result: Any,
     user_entry: Dict[str, Any],
     assistant_entry: Dict[str, Any],
+    tool_events: List[Dict[str, Any]],
 ) -> None:
     """Persist per-turn metadata for later inspection."""
 
@@ -435,15 +450,24 @@ def record_turn_metadata(
             "total_tokens": total_tokens,
         }
 
-    turn_log.append(
-        {
-            "timestamp": assistant_entry.get("timestamp"),
-            "user": user_entry.get("content"),
-            "assistant": assistant_entry.get("content"),
-            "stop_reason": str(getattr(result, "stop_reason", "")),
-            "usage": usage_payload,
-        }
-    )
+    turn_entry: Dict[str, Any] = {
+        "timestamp": assistant_entry.get("timestamp"),
+        "user": user_entry.get("content"),
+        "assistant": assistant_entry.get("content"),
+        "stop_reason": str(getattr(result, "stop_reason", "")),
+        "usage": usage_payload,
+    }
+    if tool_events:
+        turn_entry["tools_used"] = [
+            {
+                "name": event.get("name"),
+                "arguments": event.get("arguments", {}),
+                "result_summary": event.get("result_summary"),
+                "status": event.get("status", "success"),
+            }
+            for event in tool_events
+        ]
+    turn_log.append(turn_entry)
     metadata["last_response"] = assistant_entry.get("content")
     metadata["last_stop_reason"] = str(getattr(result, "stop_reason", ""))
 
@@ -481,6 +505,88 @@ def coerce_usage_counts(usage: Any) -> Tuple[Optional[int], Optional[int], Optio
         getattr(usage, "outputTokens", None),
         getattr(usage, "totalTokens", None),
     )
+
+
+def extract_tool_events(agent: Any, prev_message_count: int) -> List[Dict[str, Any]]:
+    """Extract tool usage events from the agent's message log."""
+
+    messages = getattr(agent, "messages", [])
+    if not isinstance(messages, list):
+        return []
+    new_messages = messages[prev_message_count:]
+    return collect_tool_events_from_messages(new_messages)
+
+
+def collect_tool_events_from_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collect tool usage events from provided messages."""
+
+    events: List[Dict[str, Any]] = []
+    event_map: Dict[str, Dict[str, Any]] = {}
+
+    for message in messages:
+        for block in message.get("content", []):
+            if not isinstance(block, dict):
+                continue
+            if "toolUse" in block:
+                tool_use = block["toolUse"]
+                tool_use_id = str(tool_use.get("toolUseId"))
+                event = event_map.setdefault(
+                    tool_use_id,
+                    {
+                        "tool_use_id": tool_use_id,
+                        "order": len(events),
+                        "arguments": {},
+                    },
+                )
+                event["name"] = tool_use.get("name")
+                event["arguments"] = tool_use.get("input", {})
+                if event not in events:
+                    events.append(event)
+            elif "toolResult" in block:
+                tool_result = block["toolResult"]
+                tool_use_id = str(tool_result.get("toolUseId"))
+                event = event_map.setdefault(
+                    tool_use_id,
+                    {
+                        "tool_use_id": tool_use_id,
+                        "order": len(events),
+                        "arguments": {},
+                    },
+                )
+                event["status"] = tool_result.get("status", "success")
+                event["result_summary"] = summarize_tool_result(tool_result)
+                if event not in events:
+                    events.append(event)
+
+    events.sort(key=lambda event: event.get("order", 0))
+    return events
+
+
+def summarize_tool_result(tool_result: Dict[str, Any]) -> str:
+    """Create a truncated summary of tool output content."""
+
+    parts: List[str] = []
+    for content in tool_result.get("content", []):
+        if "text" in content and content["text"]:
+            parts.append(str(content["text"]))
+        elif "json" in content:
+            try:
+                parts.append(json.dumps(content["json"], sort_keys=True))
+            except TypeError:
+                parts.append(str(content["json"]))
+    summary = " ".join(parts).strip()
+    if len(summary) > TOOL_SUMMARY_LIMIT:
+        summary = summary[:TOOL_SUMMARY_LIMIT].rstrip() + "..."
+    return summary or "[no output]"
+
+
+def format_tool_history_entry(event: Dict[str, Any]) -> str:
+    """Format a history entry describing a tool call."""
+
+    name = event.get("name") or "tool"
+    status = event.get("status", "success")
+    summary = event.get("result_summary", "")
+    return f"[Tool {name} | {status}] {summary}"
 
 
 def main() -> int:

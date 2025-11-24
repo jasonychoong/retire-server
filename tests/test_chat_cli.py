@@ -11,6 +11,8 @@ import pytest
 from server.tools.lib import chat_cli as chat
 from server.tools.lib.session_store import SessionNotFoundError, SessionStore
 
+from typing import Any, Dict
+
 
 def make_args(**overrides) -> Namespace:
     defaults = dict(
@@ -160,3 +162,62 @@ def test_extract_text_from_message_concatenates_blocks() -> None:
     }
 
     assert chat.extract_text_from_message(message) == "Part one\nPart two"
+
+
+def test_collect_tool_events_from_messages_truncates_summary() -> None:
+    long_text = "A" * 300
+    messages = [
+        {
+            "content": [
+                {
+                    "toolUse": {
+                        "toolUseId": "abc",
+                        "name": "retirement_readiness",
+                        "input": {"age": 54},
+                    }
+                }
+            ]
+        },
+        {
+            "content": [
+                {
+                    "toolResult": {
+                        "toolUseId": "abc",
+                        "status": "success",
+                        "content": [{"text": long_text}],
+                    }
+                }
+            ]
+        },
+    ]
+
+    events = chat.collect_tool_events_from_messages(messages)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event["name"] == "retirement_readiness"
+    assert event["arguments"] == {"age": 54}
+    assert event["status"] == "success"
+    assert len(event["result_summary"]) <= 203  # 200 chars + ellipsis
+
+
+def test_record_turn_metadata_includes_tools() -> None:
+    class DummyMetrics:
+        def __init__(self) -> None:
+            self.accumulated_usage = {"inputTokens": 1, "outputTokens": 2, "totalTokens": 3}
+
+    class DummyResult:
+        def __init__(self) -> None:
+            self.metrics = DummyMetrics()
+            self.stop_reason = "end_turn"
+
+    metadata: Dict[str, Any] = {}
+    user_entry = {"content": "hello", "timestamp": "now"}
+    assistant_entry = {"content": "hi", "timestamp": "later"}
+    tool_events = [
+        {"name": "retirement_readiness", "arguments": {"age": 54}, "result_summary": "Summary", "status": "success"}
+    ]
+
+    chat.record_turn_metadata(metadata, DummyResult(), user_entry, assistant_entry, tool_events)
+
+    assert metadata["turns"][0]["tools_used"][0]["name"] == "retirement_readiness"
