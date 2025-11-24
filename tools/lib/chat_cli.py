@@ -22,7 +22,9 @@ from server.tools.lib import (
     SessionNotFoundError,
     SessionStore,
     SessionStoreError,
+    ToolRegistryError,
     load_base_config,
+    load_tool_registry,
     session_config_from_metadata,
 )
 
@@ -214,9 +216,13 @@ def _append_system_prompt_history(store: SessionStore, session_id: str, prompt_t
 
 
 def load_tools() -> List[Any]:
-    """Placeholder for Task 4 tool loading."""
+    """Load tool callables from the registry file."""
 
-    return []
+    try:
+        return load_tool_registry()
+    except ToolRegistryError as exc:
+        print(f"Tool registry error: {exc}", file=sys.stderr)
+        return []
 
 
 def delete_all_sessions(store: SessionStore) -> None:
