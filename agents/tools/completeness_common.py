@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
@@ -59,6 +59,23 @@ def validate_topic(topic: str) -> str:
 
 def current_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def current_session_id(store: Optional[SessionStore] = None) -> str:
+    """Resolve the active session id from env or SessionStore index."""
+
+    store = store or SessionStore()
+    env_session = os.environ.get("RETIRE_CURRENT_SESSION_ID")
+    if env_session:
+        if store.session_exists(env_session):
+            return env_session
+        raise SessionNotFoundError(
+            f"Environment RETIRE_CURRENT_SESSION_ID={env_session} does not match any known session."
+        )
+    current = store.get_current_session()
+    if current:
+        return current.id
+    raise SessionNotFoundError("No active session found. Set RETIRE_CURRENT_SESSION_ID or mark a session current.")
 
 
 def append_information_record(
