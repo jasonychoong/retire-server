@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import io
 import json
 import os
@@ -10,7 +11,7 @@ import sys
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from server.agents.chat import (
     MODEL_REGISTRY,
@@ -78,6 +79,46 @@ def print_chat(role: str, label: str, message: str) -> None:
         "system": "system",
     }.get(role, "log")
     print(colorize(f"{label}: {message}", style))
+
+
+def create_stream_printer(role: str = "assistant") -> tuple[Callable[[str], None], Callable[[], None]]:
+    def handle_chunk(chunk: str) -> None:
+        if not chunk:
+            return
+        if COLOR_OUTPUT_ENABLED:
+            sys.stdout.write(ANSI_CODES[role] + chunk + ANSI_RESET)
+        else:
+            sys.stdout.write(chunk)
+        sys.stdout.flush()
+
+    def complete() -> None:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    return handle_chunk, complete
+
+
+def stream_agent_response(
+    agent: Any,
+    user_input: str,
+    on_chunk: Callable[[str], None],
+) -> Tuple[str, Any]:
+    async def _runner() -> Tuple[str, Any]:
+        parts: List[str] = []
+        final_result: Any = None
+        async for event in agent.stream_async(user_input):
+            data = event.get("data")
+            if data:
+                text = str(data)
+                parts.append(text)
+                on_chunk(text)
+            if "result" in event:
+                final_result = event["result"]
+        if final_result is None:
+            raise RuntimeError("Streaming ended without a final result event.")
+        return "".join(parts), final_result
+
+    return asyncio.run(_runner())
 
 
 def _format_tool_arguments(arguments: Any) -> str:
@@ -393,10 +434,10 @@ def run_single_turn(
         metadata=metadata,
         user_input=user_input,
         verbose=verbose,
+        stream=True,
     )
     if response is None:
         return 1
-    print_chat("assistant", "Assistant", response)
     return 0
 
 
@@ -449,9 +490,8 @@ def run_interactive_loop(
             metadata=metadata,
             user_input=user_input,
             verbose=verbose,
+            stream=True,
         )
-        if response is not None:
-            print_chat("assistant", "Assistant", response)
 
     return 0
 
@@ -465,6 +505,9 @@ def execute_turn(
     metadata: Dict[str, Any],
     user_input: str,
     verbose: bool,
+    stream: bool = True,
+    stream_chunk_handler: Optional[Callable[[str], None]] = None,
+    stream_complete_handler: Optional[Callable[[], None]] = None,
 ) -> Optional[str]:
     """Run a single agent invocation and persist history/metadata."""
 
@@ -472,25 +515,56 @@ def execute_turn(
     agent_messages = getattr(agent, "messages", [])
     prev_agent_message_count = len(agent_messages) if isinstance(agent_messages, list) else 0
 
-    stdout_buffer = io.StringIO()
-    stderr_buffer = io.StringIO()
-    try:
-        with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-            result = agent(user_input)
-    except Exception as exc:  # pragma: no cover - defensive
-        print(f"Agent execution failed: {exc}", file=sys.stderr)
-        metadata.setdefault("errors", []).append(
-            {"timestamp": user_entry["timestamp"], "message": str(exc)}
-        )
-        store.write_metadata(session_id, metadata)
-        return None
-    finally:
-        stray_stdout = stdout_buffer.getvalue()
-        stray_stderr = stderr_buffer.getvalue()
-        if stray_stdout.strip():
-            verbose_print(verbose, f"Suppressed agent stdout: {stray_stdout.strip()}")
-        if stray_stderr.strip():
-            verbose_print(verbose, f"Suppressed agent stderr: {stray_stderr.strip()}")
+    used_streaming = False
+    response_text: Optional[str] = None
+    result_obj: Any = None
+    if stream and hasattr(agent, "stream_async"):
+        chunk_handler = stream_chunk_handler
+        complete_handler = stream_complete_handler
+        if chunk_handler is None:
+            chunk_handler, default_complete = create_stream_printer("assistant")
+            if complete_handler is None:
+                complete_handler = default_complete
+        elif complete_handler is None:
+            complete_handler = lambda: None
+        try:
+            response_text, result_obj = stream_agent_response(agent, user_input, chunk_handler)
+            used_streaming = True
+        except Exception as exc:
+            verbose_print(verbose, f"Streaming unavailable ({exc}); falling back to buffered responses.")
+            result_obj = None
+        else:
+            if complete_handler:
+                complete_handler()
+    else:
+        result_obj = None
+
+    if not used_streaming:
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+        try:
+            with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+                result_obj = agent(user_input)
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"Agent execution failed: {exc}", file=sys.stderr)
+            metadata.setdefault("errors", []).append(
+                {"timestamp": user_entry["timestamp"], "message": str(exc)}
+            )
+            store.write_metadata(session_id, metadata)
+            return None
+        finally:
+            stray_stdout = stdout_buffer.getvalue()
+            stray_stderr = stderr_buffer.getvalue()
+            if stray_stdout.strip():
+                verbose_print(verbose, f"Suppressed agent stdout: {stray_stdout.strip()}")
+            if stray_stderr.strip():
+                verbose_print(verbose, f"Suppressed agent stderr: {stray_stderr.strip()}")
+        response_text = extract_text_from_message(result_obj.message) or "[No response]"
+    else:
+        assert response_text is not None
+
+    result = result_obj
+
 
     tool_events = extract_tool_events(agent, prev_agent_message_count)
     for event in tool_events:
@@ -523,6 +597,8 @@ def execute_turn(
             f"tokens in={input_tokens} out={output_tokens} total={total_tokens}",
         )
     verbose_print(verbose, f"stop reason: {result.stop_reason}")
+    if not used_streaming:
+        print_chat("assistant", "Assistant", response_text)
     return response_text
 
 

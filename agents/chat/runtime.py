@@ -45,5 +45,6 @@ def build_agent(
         conversation_manager=conversation_manager,
         load_tools_from_directory=False,
         messages=messages,
+        callback_handler=None,
     )
 

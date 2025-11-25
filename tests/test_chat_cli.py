@@ -221,3 +221,34 @@ def test_record_turn_metadata_includes_tools() -> None:
     chat.record_turn_metadata(metadata, DummyResult(), user_entry, assistant_entry, tool_events)
 
     assert metadata["turns"][0]["tools_used"][0]["name"] == "retirement_readiness"
+
+
+class StubStreamingAgent:
+    def __init__(self, events: list[dict[str, Any]]) -> None:
+        self._events = events
+
+    async def stream_async(self, user_input: str):
+        for event in self._events:
+            yield event
+
+
+def test_stream_agent_response_collects_chunks() -> None:
+    class DummyResult:
+        pass
+
+    result = DummyResult()
+    events = [{"data": "Hel"}, {"data": "lo"}, {"result": result}]
+    captured: list[str] = []
+
+    text, returned = chat.stream_agent_response(StubStreamingAgent(events), "ignored", captured.append)
+
+    assert text == "Hello"
+    assert returned is result
+    assert captured == ["Hel", "lo"]
+
+
+def test_stream_agent_response_requires_final_result() -> None:
+    events = [{"data": "chunk"}]
+
+    with pytest.raises(RuntimeError):
+        chat.stream_agent_response(StubStreamingAgent(events), "ignored", lambda chunk: None)
