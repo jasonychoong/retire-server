@@ -138,6 +138,35 @@ class SessionStore:
     def write_metadata(self, session_id: str, data: Dict[str, Any]) -> None:
         self._write_json_file(self._metadata_file(session_id), data)
 
+    def session_directory(self, session_id: str) -> Path:
+        """Return the root directory for the given session."""
+
+        return self._session_dir(session_id)
+
+    def append_jsonl(self, session_id: str, filename: str, payload: Dict[str, Any]) -> None:
+        """Append a JSON-serializable payload to a *.jsonl file under the session."""
+
+        target_file = self._session_dir(session_id) / filename
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        with target_file.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload))
+            handle.write("\n")
+
+    def read_jsonl(self, session_id: str, filename: str) -> List[Dict[str, Any]]:
+        """Read a jsonl file under the session, returning a list of parsed dicts."""
+
+        target_file = self._session_dir(session_id) / filename
+        if not target_file.exists():
+            return []
+        records: List[Dict[str, Any]] = []
+        with target_file.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                records.append(json.loads(line))
+        return records
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
