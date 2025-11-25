@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import io
+import json
 import os
 import sys
-import json
+from contextlib import redirect_stdout, redirect_stderr
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,6 +34,59 @@ from server.tools.lib import (
 HISTORY_DISPLAY_LIMIT = 10
 TOOL_SUMMARY_LIMIT = 200
 EXIT_COMMANDS = {"exit", "/exit", "quit", ":q"}
+
+ANSI_RESET = "\033[0m"
+ANSI_CODES = {
+    "user": "\033[32m",        # green
+    "assistant": "\033[34m",   # blue
+    "tool": "\033[33m",        # yellow
+    "system": "\033[35m",
+    "log": "\033[90m",         # grey
+}
+
+
+def _color_output_enabled() -> bool:
+    if os.environ.get("RETIRE_FORCE_COLOR") == "1":
+        return True
+    if os.environ.get("RETIRE_NO_COLOR") == "1":
+        return False
+    output = getattr(sys, "stdout", None)
+    return bool(getattr(output, "isatty", lambda: False)())
+
+
+COLOR_OUTPUT_ENABLED = _color_output_enabled()
+
+
+def colorize(text: str, style: str) -> str:
+    if not COLOR_OUTPUT_ENABLED:
+        return text
+    prefix = ANSI_CODES.get(style)
+    if not prefix:
+        return text
+    return f"{prefix}{text}{ANSI_RESET}"
+
+
+def print_log(message: str) -> None:
+    print(colorize(message, "log"))
+
+
+def print_chat(role: str, label: str, message: str) -> None:
+    style = {
+        "user": "user",
+        "assistant": "assistant",
+        "tool": "tool",
+        "system": "system",
+    }.get(role, "log")
+    print(colorize(f"{label}: {message}", style))
+
+
+def _format_tool_arguments(arguments: Any) -> str:
+    if not arguments:
+        return "{}"
+    try:
+        return json.dumps(arguments, sort_keys=True)
+    except TypeError:
+        return str(arguments)
 
 
 def parse_args() -> argparse.Namespace:
@@ -78,7 +133,7 @@ def parse_args() -> argparse.Namespace:
 def render_session_table(store: SessionStore) -> None:
     records = store.list_sessions()
     if not records:
-        print("No sessions found.")
+        print_log("No sessions found.")
         return
     headers = ("Current", "Session ID", "Created (UTC)", "Description")
     rows = []
@@ -97,10 +152,10 @@ def render_session_table(store: SessionStore) -> None:
     ]
     header_line = " | ".join(header.ljust(column_widths[idx]) for idx, header in enumerate(headers))
     separator = "-+-".join("-" * column_widths[idx] for idx in range(len(headers)))
-    print(header_line)
-    print(separator)
+    print_log(header_line)
+    print_log(separator)
     for row in rows:
-        print(" | ".join(str(value).ljust(column_widths[idx]) for idx, value in enumerate(row)))
+        print_log(" | ".join(str(value).ljust(column_widths[idx]) for idx, value in enumerate(row)))
 
 
 def parse_bool(value: Optional[str]) -> Optional[bool]:
@@ -269,26 +324,27 @@ def verbose_print(enabled: bool, message: str) -> None:
     """Print a verbose message when enabled."""
 
     if enabled:
-        print(f"[verbose] {message}")
+        print(colorize(f"[verbose] {message}", "log"))
 
 
 def print_history_overview(history: List[Dict[str, Any]]) -> None:
     """Display a short summary of the existing conversation."""
 
     if not history:
-        print("No previous conversation history.")
+        print_log("No previous conversation history.")
         return
 
-    print("Previous conversation:")
+    print_log("Previous conversation:")
     for entry in history[-HISTORY_DISPLAY_LIMIT:]:
         role = entry.get("role", "system")
         label = {
             "user": "You",
             "assistant": "Assistant",
             "system": "System",
+            "tool": "Tool",
         }.get(role, role.title())
         content = entry.get("content", "")
-        print(f"{label}: {content}")
+        print_chat(role, label, content)
 
 
 def collect_single_input(prompt: str = "You> ") -> Optional[str]:
@@ -298,9 +354,18 @@ def collect_single_input(prompt: str = "You> ") -> Optional[str]:
         data = sys.stdin.read().strip()
         return data or None
     try:
-        value = input(prompt)
+        if COLOR_OUTPUT_ENABLED:
+            sys.stdout.write(ANSI_CODES["user"] + prompt)
+        else:
+            sys.stdout.write(prompt)
+        sys.stdout.flush()
+        value = input()
     except EOFError:
         return None
+    finally:
+        if COLOR_OUTPUT_ENABLED:
+            sys.stdout.write(ANSI_RESET)
+            sys.stdout.flush()
     return value.strip() or None
 
 
@@ -331,7 +396,7 @@ def run_single_turn(
     )
     if response is None:
         return 1
-    print(f"Assistant: {response}")
+    print_chat("assistant", "Assistant", response)
     return 0
 
 
@@ -346,17 +411,30 @@ def run_interactive_loop(
 ) -> int:
     """Enter interactive chat mode until the user exits."""
 
-    print_history_overview(history)
-    print("Enter '/exit' or press Ctrl-D to leave the session.")
+    if history:
+        print_log(f"Resuming session with {len(history)} prior entries.")
+    else:
+        print_log("Starting a new conversation.")
+    print_log("Enter '/exit' or press Ctrl-D to leave the session.")
     while True:
         try:
-            user_input = input("You> ").strip()
+            if COLOR_OUTPUT_ENABLED:
+                sys.stdout.write(ANSI_CODES["user"] + "You> ")
+            else:
+                sys.stdout.write("You> ")
+            sys.stdout.flush()
+            user_input = input().strip()
         except EOFError:
             print()
             break
         except KeyboardInterrupt:
-            print("\nInterrupted.")
+            print()
+            print_log("Interrupted.")
             break
+        finally:
+            if COLOR_OUTPUT_ENABLED:
+                sys.stdout.write(ANSI_RESET)
+                sys.stdout.flush()
 
         if not user_input:
             continue
@@ -373,7 +451,7 @@ def run_interactive_loop(
             verbose=verbose,
         )
         if response is not None:
-            print(f"Assistant: {response}")
+            print_chat("assistant", "Assistant", response)
 
     return 0
 
@@ -394,8 +472,11 @@ def execute_turn(
     agent_messages = getattr(agent, "messages", [])
     prev_agent_message_count = len(agent_messages) if isinstance(agent_messages, list) else 0
 
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
     try:
-        result = agent(user_input)
+        with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+            result = agent(user_input)
     except Exception as exc:  # pragma: no cover - defensive
         print(f"Agent execution failed: {exc}", file=sys.stderr)
         metadata.setdefault("errors", []).append(
@@ -403,6 +484,13 @@ def execute_turn(
         )
         store.write_metadata(session_id, metadata)
         return None
+    finally:
+        stray_stdout = stdout_buffer.getvalue()
+        stray_stderr = stderr_buffer.getvalue()
+        if stray_stdout.strip():
+            verbose_print(verbose, f"Suppressed agent stdout: {stray_stdout.strip()}")
+        if stray_stderr.strip():
+            verbose_print(verbose, f"Suppressed agent stderr: {stray_stderr.strip()}")
 
     tool_events = extract_tool_events(agent, prev_agent_message_count)
     for event in tool_events:
@@ -413,6 +501,14 @@ def execute_turn(
             "tool",
             format_tool_history_entry(event),
         )
+    if tool_events:
+        for idx, event in enumerate(tool_events, start=1):
+            name = event.get("name") or f"tool_{idx}"
+            arguments = _format_tool_arguments(event.get("arguments"))
+            summary = event.get("result_summary") or "[no output]"
+            prefix = f"Tool #{idx} ({name})"
+            print_chat("tool", prefix, f"Input: {arguments}")
+            print_chat("tool", prefix, f"Result: {summary}")
 
     response_text = extract_text_from_message(result.message) or "[No response]"
     assistant_entry = append_history_entry(store, session_id, history, "assistant", response_text)
@@ -603,12 +699,12 @@ def main() -> int:
         except SessionNotFoundError as exc:
             print(str(exc), file=sys.stderr)
             return 1
-        print(f"Deleted session {args.delete_session}")
+        print_log(f"Deleted session {args.delete_session}")
         return 0
 
     if args.delete_all_sessions:
         delete_all_sessions(store)
-        print("Deleted all sessions.")
+        print_log("Deleted all sessions.")
         return 0
 
     if args.description and not args.session:
@@ -621,7 +717,7 @@ def main() -> int:
         except SessionNotFoundError as exc:
             print(str(exc), file=sys.stderr)
             return 1
-        print(f"Updated description for session {args.session}")
+        print_log(f"Updated description for session {args.session}")
         return 0
 
     try:
@@ -668,14 +764,14 @@ def main() -> int:
         messages=agent_messages,
     )
 
-    print(f"Active session: {session_id}")
-    print(f"Model: {config.model}")
-    print(f"Window size: {config.window_size}")
-    print(f"Should truncate results: {config.should_truncate_results}")
+    print_log(f"Active session: {session_id}")
+    print_log(f"Model: {config.model}")
+    print_log(f"Window size: {config.window_size}")
+    print_log(f"Should truncate results: {config.should_truncate_results}")
     if effective_system_prompt:
         source = metadata.get("system_prompt_source", "unknown")
         location = metadata.get("system_prompt_file_path") or "inline text"
-        print(f"System prompt ({source}): {location}")
+        print_log(f"System prompt ({source}): {location}")
 
     if args.single:
         status = run_single_turn(
@@ -696,6 +792,6 @@ def main() -> int:
             verbose=args.verbose,
         )
 
-    print(f"Session ID: {session_id}")
+    print_log(f"Session ID: {session_id}")
     return status
 
