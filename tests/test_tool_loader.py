@@ -44,3 +44,4 @@ def test_load_tool_registry_invalid_entry(tmp_path: Path, monkeypatch: pytest.Mo
         tool_loader.load_tool_registry()
 
 
+

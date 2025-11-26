@@ -52,3 +52,4 @@ def test_update_description_requires_existing_session(tmp_path: Path) -> None:
     with pytest.raises(SessionNotFoundError):
         store.update_description("missing", "oops")
 
+

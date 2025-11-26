@@ -102,16 +102,37 @@ def stream_agent_response(
     agent: Any,
     user_input: str,
     on_chunk: Callable[[str], None],
+    *,
+    on_tool_events: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Tuple[str, Any]:
     async def _runner() -> Tuple[str, Any]:
         parts: List[str] = []
         final_result: Any = None
         async for event in agent.stream_async(user_input):
+            if on_tool_events:
+                on_tool_events(event)
             data = event.get("data")
             if data:
                 text = str(data)
                 parts.append(text)
                 on_chunk(text)
+            elif event.get("event") == "toolUse":
+                tool_event = {
+                    "type": "tool_use",
+                    "name": event.get("name"),
+                    "arguments": event.get("input", {}),
+                }
+                if on_tool_events:
+                    on_tool_events(tool_event)
+            elif event.get("event") == "toolResult":
+                tool_event = {
+                    "type": "tool_result",
+                    "name": event.get("name"),
+                    "status": event.get("status", "success"),
+                    "content": event.get("content"),
+                }
+                if on_tool_events:
+                    on_tool_events(tool_event)
             if "result" in event:
                 final_result = event["result"]
         if final_result is None:
@@ -518,6 +539,7 @@ def execute_turn(
     used_streaming = False
     response_text: Optional[str] = None
     result_obj: Any = None
+    pending_tool_events: List[Dict[str, Any]] = []
     if stream and hasattr(agent, "stream_async"):
         chunk_handler = stream_chunk_handler
         complete_handler = stream_complete_handler
@@ -527,8 +549,28 @@ def execute_turn(
                 complete_handler = default_complete
         elif complete_handler is None:
             complete_handler = lambda: None
+        def handle_stream_event(event: Dict[str, Any]) -> None:
+            if event.get("type") == "tool_use":
+                name = event.get("name") or "tool"
+                arguments = _format_tool_arguments(event.get("arguments"))
+                prefix = f"Tool ({name})"
+                print_chat("tool", prefix, f"Input: {arguments}")
+            elif event.get("type") == "tool_result":
+                name = event.get("name") or "tool"
+                status = event.get("status", "success")
+                content = event.get("content") or []
+                summary = summarize_tool_result({"content": content}) if content else "[no output]"
+                prefix = f"Tool ({name})"
+                print_chat("tool", prefix, f"Result: {summary} [{status}]")
+            pending_tool_events.append(event)
+
         try:
-            response_text, result_obj = stream_agent_response(agent, user_input, chunk_handler)
+            response_text, result_obj = stream_agent_response(
+                agent,
+                user_input,
+                chunk_handler,
+                on_tool_events=handle_stream_event,
+            )
             used_streaming = True
         except Exception as exc:
             verbose_print(verbose, f"Streaming unavailable ({exc}); falling back to buffered responses.")
@@ -575,14 +617,6 @@ def execute_turn(
             "tool",
             format_tool_history_entry(event),
         )
-    if tool_events:
-        for idx, event in enumerate(tool_events, start=1):
-            name = event.get("name") or f"tool_{idx}"
-            arguments = _format_tool_arguments(event.get("arguments"))
-            summary = event.get("result_summary") or "[no output]"
-            prefix = f"Tool #{idx} ({name})"
-            print_chat("tool", prefix, f"Input: {arguments}")
-            print_chat("tool", prefix, f"Result: {summary}")
 
     response_text = extract_text_from_message(result.message) or "[No response]"
     assistant_entry = append_history_entry(store, session_id, history, "assistant", response_text)

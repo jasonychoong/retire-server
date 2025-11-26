@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from server.agents.tools import completeness_common as common
-from server.agents.tools import information, information_query
+from server.agents.tools import information, information_query, completeness
 from server.tools.lib.session_store import SessionStore
 
 
@@ -55,5 +55,22 @@ def test_information_query_returns_records(session_env: tuple[SessionStore, str]
     assert len(records) == 2
     assert records[0]["topic"] == "income_cash_flow"
     assert records[1]["topic"] == "tax_efficiency_rmds"
+
+
+def test_completeness_tool_writes_snapshot(session_env: tuple[SessionStore, str]) -> None:
+    store, session_id = session_env
+
+    message = completeness.completeness(
+        [
+            {"topic": "income_cash_flow", "score": 70, "reason": "Captured budget"},
+            {"topic": "tax_efficiency_rmds", "score": 40},
+        ]
+    )
+
+    assert "income_cash_flow" in message
+    snapshots = common.read_completeness_snapshots(session_id, store=store)
+    assert len(snapshots) == 1
+    assert snapshots[0]["scores"][0]["score"] == 70
+
 
 

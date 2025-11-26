@@ -41,3 +41,4 @@ def test_session_config_overrides_and_metadata_round_trip() -> None:
     metadata_cfg = session_config_from_metadata({"config": updated.to_dict()})
     assert metadata_cfg == updated
 
+

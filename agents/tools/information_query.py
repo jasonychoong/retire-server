@@ -17,3 +17,4 @@ def information_query() -> List[common.InformationRecord]:
     return common.read_information_records(session_id)
 
 
+

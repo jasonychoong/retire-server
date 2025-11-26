@@ -1,2 +1,5 @@
 - server.agents.tools.retirement:retirement_readiness
+- server.agents.tools.information:information
+- server.agents.tools.information_query:information_query
+- server.agents.tools.completeness:completeness
 
