@@ -25,4 +25,19 @@
 5. **Validate tool logging**
    - Inspect `history.json` and `metadata.json` for the session to confirm tool usage entries exist for all three tools.
 
+6. **Observe live monitors (optional but recommended)**
+   - In a second terminal, run the completeness monitor to watch per-topic arrows update:
+     ```bash
+     cd server
+     ./tools/completeness
+     ```
+     - You can pass `--session <id>` to monitor a specific session.
+     - Enter a topic number (1–8) to print the recommended “explore this topic” prompt, then press Enter to resume monitoring.
+   - In a third terminal, run the profile monitor to view captured facts grouped by topic/subtopic:
+     ```bash
+     cd server
+     ./tools/profile
+     ```
+   - Keep both windows open while you chat; they should refresh every ~2 seconds.
+
 
